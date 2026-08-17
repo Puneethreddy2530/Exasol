@@ -22,6 +22,7 @@ exactly the pattern Exasol's own geospatial docs show (INSERT INTO t1 VALUES
 
 import argparse
 import csv
+import ssl
 from pathlib import Path
 
 import pyexasol
@@ -63,9 +64,20 @@ def main():
     ap.add_argument("--user", default="sys")
     ap.add_argument("--password", required=True)
     ap.add_argument("--schema", default="EXACOMMAND")
+    ap.add_argument(
+        "--validate-cert",
+        action="store_true",
+        help="Require normal TLS certificate validation. Leave off for the local starter-kit self-signed cert.",
+    )
     args = ap.parse_args()
 
-    conn = pyexasol.connect(dsn=args.dsn, user=args.user, password=args.password)
+    websocket_sslopt = None if args.validate_cert else {"cert_reqs": ssl.CERT_NONE}
+    conn = pyexasol.connect(
+        dsn=args.dsn,
+        user=args.user,
+        password=args.password,
+        websocket_sslopt=websocket_sslopt,
+    )
 
     print("Applying schema (sql/01_schema.sql)...")
     for stmt in SCHEMA_SQL.split(";"):
@@ -101,7 +113,13 @@ def main():
     ])
 
     print("\nSanity check — running Q1 (roads intersecting flood zones) live:")
-    result = conn.execute((ROOT / "sql" / "02_queries.sql").read_text().split(";")[0])
+    sanity_q1 = """
+        SELECT r.ROAD_ID, r.NAME, f.NAME AS FLOODED_BY, f.SEVERITY
+        FROM ROADS r
+        JOIN FLOOD_ZONES f
+          ON ST_INTERSECTS(r.GEO, f.GEO)
+    """
+    result = conn.execute(sanity_q1)
     for row in result:
         print(" ", row)
 

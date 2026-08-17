@@ -9,7 +9,7 @@ the Real World).
 
 Submission deadline: **23 Aug 2026, 9:00 PM IST.**
 
-## Status as of this session (16 Aug 2026)
+## Status as of this session (17 Aug 2026)
 
 Everything below was actually run, not just written. Where something is unverified, it says so.
 
@@ -19,9 +19,9 @@ Everything below was actually run, not just written. Where something is unverifi
 | MCLP solver (`solver/mclp_solver.py`) | ✅ Runs, `OPTIMAL` status, ~30ms solve time |
 | Road-network routing (ambulances only; boats bypass roads by design) | ✅ Mechanism verified via stress test (see below) |
 | AI tool-calling contract + rule-based fallback (`agent/tools.py`) | ✅ Fallback parser tested against 3 phrasings |
-| Exasol schema (`sql/01_schema.sql`) | ⚠️ Syntax verified against docs.exasol.com; **not yet run against a live instance** |
-| Exasol spatial queries (`sql/02_queries.sql`) | ⚠️ Same — syntax-verified, not live-tested |
-| pyexasol loader (`scripts/load_data.py`) | ⚠️ Written correctly per the pyexasol API; **not yet run** — needs a live Exasol Personal Local instance, which this sandbox can't provide |
+| Exasol schema (`sql/01_schema.sql`) | ✅ Live-tested against Exasol Personal Local on `127.0.0.1:8563` |
+| Exasol spatial queries (`sql/02_queries.sql`) | ✅ Q1 live-tested through `pyexasol` and independently through `exapump`; Q2-Q5 are written but still need live query-specific checks |
+| pyexasol loader (`scripts/load_data.py`) | ✅ Live-run against Exasol Personal Local; loads 20 zones, 3 flood zones, 6 roads, 10 facilities, 28 assets |
 | Frontend (map, sliders, road-click) | ❌ Not started this session |
 | Real OSM road network / real flood-hazard data (opencity.in) | ❌ Not started — current data is synthetic, anchored on real coordinates (see `data/generate_corridor_data.py` docstring) |
 
