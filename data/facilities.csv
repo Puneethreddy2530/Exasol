@@ -1,0 +1,11 @@
+facility_id,name,type,capacity,geo_wkt
+FC001,Velachery Hospital,hospital,217,POINT(80.219927 12.977776)
+FC002,Velachery Shelter,shelter,334,POINT(80.219396 12.976468)
+FC003,Pallikaranai Hospital,hospital,115,POINT(80.215746 12.934848)
+FC004,Pallikaranai Shelter,shelter,460,POINT(80.210923 12.937789)
+FC005,Adyar Hospital,hospital,120,POINT(80.253908 13.005677)
+FC006,Adyar Shelter,shelter,548,POINT(80.261369 13.005353)
+FC007,Guindy Hospital,hospital,215,POINT(80.218586 13.013969)
+FC008,Guindy Shelter,shelter,328,POINT(80.217466 13.006292)
+FC009,Saidapet Hospital,hospital,217,POINT(80.224228 13.019435)
+FC010,Saidapet Shelter,shelter,584,POINT(80.222578 13.018192)

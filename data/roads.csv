@@ -1,0 +1,7 @@
+road_id,name,from_locality,to_locality,geo_wkt
+R001,Velachery Main Road,Velachery,Guindy,"LINESTRING(80.220500 12.975800, 80.215700 13.010200)"
+R002,100 Feet Road,Velachery,Adyar,"LINESTRING(80.220500 12.975800, 80.257400 13.006300)"
+R003,Velachery-Pallikaranai Link,Velachery,Pallikaranai,"LINESTRING(80.220500 12.975800, 80.213700 12.934900)"
+R004,Pallikaranai-Perungudi Link,Pallikaranai,Adyar,"LINESTRING(80.213700 12.934900, 80.257400 13.006300)"
+R005,Guindy-Saidapet Road,Guindy,Saidapet,"LINESTRING(80.215700 13.010200, 80.223100 13.021300)"
+R006,Saidapet Bridge (Adyar river),Saidapet,Adyar,"LINESTRING(80.223100 13.021300, 80.257400 13.006300)"

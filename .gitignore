@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+.exasol-starter-kit/
+files*/
+files*.zip
