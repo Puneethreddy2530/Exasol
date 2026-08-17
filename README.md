@@ -16,8 +16,8 @@ Everything below was actually run, not just written. Where something is unverifi
 | Piece | Status |
 |---|---|
 | Corridor data generator (`data/`) | ✅ Runs, produces 20 zones / 396,992 people, 6 roads, 10 facilities, 28 assets |
-| MCLP solver (`solver/mclp_solver.py`) | ✅ Runs, `OPTIMAL` status, ~30ms solve time |
-| Road-network routing (ambulances only; boats bypass roads by design) | ✅ Mechanism verified via stress test (see below) |
+| MCLP solver (`solver/mclp_solver.py`) | ✅ Runs, `OPTIMAL` status, and can now auto-block roads from Exasol Q1 |
+| Road-network routing (ambulances only; boats bypass roads by design) | ✅ Wired to Exasol flood-road status plus manual/judge-clicked road blocks |
 | AI tool-calling contract + rule-based fallback (`agent/tools.py`) | ✅ Fallback parser tested against 3 phrasings |
 | Exasol schema (`sql/01_schema.sql`) | ✅ Live-tested against Exasol Personal Local on `127.0.0.1:8563` |
 | Exasol spatial queries (`sql/02_queries.sql`) | ✅ Q1 live-tested through `pyexasol` and independently through `exapump`; Q2-Q5 are written but still need live query-specific checks |
@@ -27,19 +27,26 @@ Everything below was actually run, not just written. Where something is unverifi
 
 ## The verified killer metric
 
-Running `solver/mclp_solver.py` with 60% fleet availability (a credible early-crisis assumption,
-not everything-is-fine):
+Running `solver/mclp_solver.py --use-exasol-road-status` with 60% fleet availability
+(a credible early-crisis assumption, not everything-is-fine):
 
 ```
 BEFORE (uncoordinated — each unit independently drives to its own nearest zone,
         no visibility into what other units are doing):
   Coverage: 28.2%  (112,144 / 396,992 people, 5/20 zones actually reached)
 
-AFTER (ExaCommand — CP-SAT solves the coverage-maximization problem centrally,
-       OPTIMAL status, ~30ms):
-  Coverage: 70.6%  (280,239 / 396,992 people)
+EXASOL ROAD STATUS:
+  ST_INTERSECTS auto-closes roads R001, R003, R004, R005, R006
 
-+42.4 percentage points, same fleet, same day, just coordinated.
+AFTER (ExaCommand — CP-SAT solves the coverage-maximization problem centrally,
+       using Exasol's flooded-road list, OPTIMAL status):
+  Coverage: 69.5%  (275,929 / 396,992 people)
+
++41.3 percentage points, same fleet, same day, just coordinated.
+
+JUDGE ROAD-CLICK MOMENT:
+  Blocking the one remaining passable connector (`R002`) on top of Exasol's
+  flood closures drops optimized coverage from 69.5% to 56.2%.
 ```
 
 **Why this baseline, not a "smart" greedy algorithm:** an earlier version of this compared
@@ -56,25 +63,19 @@ answer, 0.03s). Worth knowing if you touch the solver: max-coverage problems hav
 symmetric optima, which makes single-threaded search slow to *prove* it already has the right
 answer, even when it does.
 
-## Road-network routing — what's proven, and the one caveat
+## Road-network routing — what's proven
 
 Ambulances route through a small locality graph (`build_locality_graph` /
 `shortest_path_m` in `mclp_solver.py`) built from `data/roads.csv`; boats travel
 independent of roads (they move through floodwater, not on it — this is a
 correctness choice, not a shortcut). Blocking a road removes that edge.
 
-**Verified this actually does something** — not by assumption, by testing: with all
-Saidapet-based ambulances removed from the scenario, cutting Saidapet's only two road
-connections (`R005`, `R006`) drops Saidapet-zone coverage from 2/4 to 1/4 sub-zones and overall
-coverage from 88.2% to 87.5%.
-
-**The caveat:** in the *default* demo scenario, blocking a single road (e.g. `R001`) changes
-*which* assets get assigned (verified) but doesn't always move the overall coverage number,
-because with the current fleet distribution the affected zone often wasn't pivotal to the
-optimal solution in the first place. Before you rehearse the "judge clicks a road" demo
-moment, pick a specific (fleet-config, road) combination you've verified produces a visible
-number change — the Saidapet-isolation scenario above is a known-working one. Don't discover
-which road "works" live.
+**Verified end to end:** Exasol's Q1 spatial join detects five flooded roads
+(`R001`, `R003`, `R004`, `R005`, `R006`) via `ST_INTERSECTS`; the solver now
+passes those IDs into `blocked_road_ids` automatically, so ambulances route only
+over the remaining passable road graph. With those flood closures active, a
+manual/judge-click block of `R002` changes optimized coverage from 69.5% to
+56.2%. That is the demo road-click to rehearse.
 
 ## Setup
 
@@ -106,6 +107,9 @@ exakit info      # note host/port/user/password
 # Apply schema + load data
 .\.venv\Scripts\python.exe scripts\load_data.py --password <from exakit info>
 
+# Run solver with Exasol's ST_INTERSECTS road closures wired in
+.\.venv\Scripts\python.exe solver\mclp_solver.py --use-exasol-road-status --password-file "$env:USERPROFILE\.exasol-starter-kit\credentials\nano_sys_password"
+
 # Connect an AI client (Claude Code, Cursor, etc.) with governed read-only access
 exakit mcp-setup
 ```
@@ -123,6 +127,9 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 python scripts/load_data.py --password <from exakit info>
+
+# Run solver with Exasol's ST_INTERSECTS road closures wired in
+python solver/mclp_solver.py --use-exasol-road-status --password-file ~/.exasol-starter-kit/credentials/nano_sys_password
 
 # Connect an AI client (Claude Code, Cursor, etc.) with governed read-only access
 exakit mcp-setup
@@ -153,9 +160,9 @@ Judge types a scenario, OR drags a slider / clicks a road on the map
      directly.
                     |
                     v
-     Exasol (GEOMETRY tables, ST_INTERSECTS / ST_DISTANCE / ST_TRANSFORM,
-     read-only MCP access) — filters passable roads, computes the
-     asset-zone distance matrix
+     Exasol (GEOMETRY tables, ST_INTERSECTS, read-only MCP access)
+     detects flooded roads; the solver currently keeps distance/routing
+     local until Q3's distance matrix is wired in
                     |
                     v
      MCLP solver (OR-Tools CP-SAT) — maximizes weighted population

@@ -12,23 +12,25 @@ mobile assets being assigned/routed rather than sited from scratch):
               only) and within MAX_REACH_M of it
              covered(z) = 1 only if at least one eligible asset is assigned
 
-This module currently computes distances in Python with a haversine formula
-as a STAND-IN for Exasol's ST_DISTANCE(ST_TRANSFORM(...), ST_TRANSFORM(...))
-query (sql/02_queries.sql, Q3) — the exact same numbers, computed locally so
-the solver logic can be built and tested before a live Exasol instance is
-wired in. Swap `build_distance_matrix()` for a pyexasol call to Q3 once
-scripts/load_data.py has loaded the corridor into Exasol; nothing else in
-this file needs to change.
+This module can now ask Exasol for Q1 road status: roads whose geometry
+intersects active flood zones are auto-fed into blocked_road_ids before the
+solver builds the ambulance road graph. Distances/routing are still computed
+locally as a stand-in for Exasol's ST_DISTANCE/ST_TRANSFORM Q3 matrix; wire
+that next without changing the CP-SAT formulation.
 """
 
+import argparse
 import csv
 import math
+import re
+import ssl
 from pathlib import Path
 from ortools.sat.python import cp_model
 
 DATA = Path(__file__).resolve().parent.parent / "data"  # works regardless of
 # where the repo is cloned, or what directory you run this from
 MAX_REACH_M = 9000  # tune once real road-network travel times are available
+IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def haversine_m(lat1, lon1, lat2, lon2):
@@ -92,6 +94,69 @@ def load_data():
         for row in csv.DictReader(f):
             roads.append(row)
     return zones, flood_zones, assets, roads
+
+
+def checked_identifier(name):
+    """Allow only plain SQL identifiers for schema interpolation."""
+    if not IDENTIFIER_RE.fullmatch(name):
+        raise ValueError(f"Unsafe SQL identifier: {name!r}")
+    return name.upper()
+
+
+def flooded_roads_sql(schema):
+    schema = checked_identifier(schema)
+    return f"""
+        SELECT DISTINCT r.ROAD_ID
+        FROM {schema}.ROADS r
+        JOIN {schema}.FLOOD_ZONES f
+          ON ST_INTERSECTS(r.GEO, f.GEO)
+        ORDER BY r.ROAD_ID
+    """
+
+
+def fetch_flooded_road_ids_from_exasol(
+    dsn="127.0.0.1:8563",
+    user="sys",
+    password=None,
+    schema="EXACOMMAND",
+    validate_cert=False,
+):
+    """Return road IDs Exasol classifies as flooded via ST_INTERSECTS.
+
+    This is intentionally read-only: it runs the same Q1 spatial join that
+    load_data.py uses for its sanity check, then feeds those road IDs into the
+    existing solver blocked-road path.
+    """
+    if not password:
+        raise ValueError("Exasol password is required when --use-exasol-road-status is set")
+
+    import pyexasol
+
+    websocket_sslopt = None if validate_cert else {"cert_reqs": ssl.CERT_NONE}
+    conn = pyexasol.connect(
+        dsn=dsn,
+        user=user,
+        password=password,
+        websocket_sslopt=websocket_sslopt,
+    )
+    try:
+        return [row[0] for row in conn.execute(flooded_roads_sql(schema))]
+    finally:
+        conn.close()
+
+
+def combine_blocked_road_ids(*sources):
+    combined, seen = [], set()
+    for source in sources:
+        for road_id in source or []:
+            if road_id not in seen:
+                combined.append(road_id)
+                seen.add(road_id)
+    return combined
+
+
+def read_text_secret(path):
+    return Path(path).read_text().strip()
 
 
 def zone_is_flooded(zone, flood_zones):
@@ -320,7 +385,33 @@ def solve_greedy_baseline(zones, flood_zones, assets, roads=None, blocked_road_i
     }
 
 
-if __name__ == "__main__":
+def main():
+    ap = argparse.ArgumentParser(description="Run the ExaCommand MCLP demo solver.")
+    ap.add_argument("--fleet-availability", type=float, default=0.6)
+    ap.add_argument(
+        "--manual-blocked-road-id",
+        action="append",
+        default=[],
+        dest="manual_blocked_road_ids",
+        help="Manual/judge-clicked road ID to block. Repeat for multiple roads.",
+    )
+    ap.add_argument(
+        "--use-exasol-road-status",
+        action="store_true",
+        help="Ask Exasol which roads intersect flood zones and auto-block those roads.",
+    )
+    ap.add_argument("--dsn", default="127.0.0.1:8563")
+    ap.add_argument("--user", default="sys")
+    ap.add_argument("--password")
+    ap.add_argument("--password-file")
+    ap.add_argument("--schema", default="EXACOMMAND")
+    ap.add_argument(
+        "--validate-cert",
+        action="store_true",
+        help="Require normal TLS certificate validation. Leave off for the local starter-kit self-signed cert.",
+    )
+    args = ap.parse_args()
+
     zones, flood_zones, assets, roads = load_data()
 
     # Demo scenario: only 60% of the fleet has reported ready/undamaged —
@@ -328,23 +419,67 @@ if __name__ == "__main__":
     # and it's where the gap is dramatic without hitting a suspicious 100%.
     ambulances = [a for a in assets if a["type"] == "ambulance"]
     boats = [a for a in assets if a["type"] == "boat"]
-    KEEP = 0.6
-    scenario_assets = ambulances[: max(1, int(len(ambulances) * KEEP))] + \
-                       boats[: max(1, int(len(boats) * KEEP))]
+    keep = max(0.0, min(1.0, args.fleet_availability))
+    scenario_assets = ambulances[: max(1, int(len(ambulances) * keep))] + \
+                       boats[: max(1, int(len(boats) * keep))]
+
+    exasol_flooded_road_ids = []
+    if args.use_exasol_road_status:
+        password = args.password
+        if not password and args.password_file:
+            password = read_text_secret(args.password_file)
+        if not password:
+            ap.error("--use-exasol-road-status requires --password or --password-file")
+
+        print("Exasol road-status SQL (read-only):")
+        print(flooded_roads_sql(args.schema).strip())
+        exasol_flooded_road_ids = fetch_flooded_road_ids_from_exasol(
+            dsn=args.dsn,
+            user=args.user,
+            password=password,
+            schema=args.schema,
+            validate_cert=args.validate_cert,
+        )
+        print()
+
+    blocked_road_ids = combine_blocked_road_ids(
+        exasol_flooded_road_ids,
+        args.manual_blocked_road_ids,
+    )
 
     print(f"Loaded {len(zones)} zones ({sum(z['population'] for z in zones):,} people), "
           f"{len(flood_zones)} flood zones, {len(roads)} roads, {len(assets)} assets in fleet\n")
     print(f"DEMO SCENARIO: {len(scenario_assets)} of {len(assets)} assets have reported ready "
-          f"({int(KEEP*100)}% fleet availability)\n")
+          f"({int(keep*100)}% fleet availability)")
+    if args.use_exasol_road_status:
+        print("Roads auto-closed by Exasol flood analysis: "
+              f"{', '.join(exasol_flooded_road_ids) or '(none)'}")
+    if args.manual_blocked_road_ids:
+        print("Roads manually closed by scenario/judge input: "
+              f"{', '.join(args.manual_blocked_road_ids)}")
+    print(f"Effective blocked roads used by solver: {', '.join(blocked_road_ids) or '(none)'}\n")
 
-    uncoordinated = solve_uncoordinated_baseline(zones, flood_zones, scenario_assets, roads=roads)
+    uncoordinated = solve_uncoordinated_baseline(
+        zones,
+        flood_zones,
+        scenario_assets,
+        roads=roads,
+        blocked_road_ids=blocked_road_ids,
+    )
     print("=== BEFORE: uncoordinated response (each unit picks its own nearest zone) ===")
     print(f"Coverage: {uncoordinated['coverage_pct']}%  "
           f"({uncoordinated['covered_population']:,} / {uncoordinated['total_population']:,} people)")
     print(f"Zones actually reached: {uncoordinated['zones_covered']} / {len(zones)} "
           f"(rest get 0 or 2+ redundant units)\n")
 
-    optimal = solve_mclp(zones, flood_zones, scenario_assets, roads=roads, prioritize_children_elderly=False)
+    optimal = solve_mclp(
+        zones,
+        flood_zones,
+        scenario_assets,
+        roads=roads,
+        blocked_road_ids=blocked_road_ids,
+        prioritize_children_elderly=False,
+    )
     print("=== AFTER: ExaCommand (CP-SAT, globally optimal) ===")
     print(f"Status: {optimal['status']}   Solve time: {optimal['solve_time_s']}s")
     print(f"Coverage: {optimal['coverage_pct']}%  "
@@ -357,13 +492,26 @@ if __name__ == "__main__":
           f"({gap:+.1f} percentage points) from the same fleet, just coordinated ===\n")
 
     print("=== Re-solve with 'prioritize children & elderly zones' toggle ===")
-    prioritized = solve_mclp(zones, flood_zones, scenario_assets, roads=roads, prioritize_children_elderly=True)
+    prioritized = solve_mclp(
+        zones,
+        flood_zones,
+        scenario_assets,
+        roads=roads,
+        blocked_road_ids=blocked_road_ids,
+        prioritize_children_elderly=True,
+    )
     print(f"Coverage: {prioritized['coverage_pct']}%  "
           f"(assignment set changed: {optimal['assignments'] != prioritized['assignments']})\n")
 
-    print("=== Re-solve with Velachery Main Road (R001) blocked — the 'judge clicks a road' moment ===")
+    remaining_road_ids = [r["road_id"] for r in roads if r["road_id"] not in blocked_road_ids]
+    click_road_id = remaining_road_ids[0] if args.use_exasol_road_status and remaining_road_ids else "R001"
+    print(f"=== Re-solve with {click_road_id} manually blocked - the 'judge clicks a road' moment ===")
+    clicked_blocked_road_ids = combine_blocked_road_ids(blocked_road_ids, [click_road_id])
     blocked = solve_mclp(zones, flood_zones, scenario_assets, roads=roads,
-                          blocked_road_ids=["R001"], prioritize_children_elderly=False)
+                          blocked_road_ids=clicked_blocked_road_ids, prioritize_children_elderly=False)
     print(f"Coverage: {optimal['coverage_pct']}% -> {blocked['coverage_pct']}%  "
           f"(assignment set changed: {optimal['assignments'] != blocked['assignments']})")
-    print("^ if this doesn't change anything, the road graph isn't actually being used — verify before demo day")
+
+
+if __name__ == "__main__":
+    main()
