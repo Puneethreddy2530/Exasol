@@ -15,7 +15,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from agent.tools import rule_based_fallback, validate_and_clamp
+from agent.tools import rule_based_fallback, validate_and_clamp, analyze_flood_image
 from solver.mclp_solver import (
     combine_blocked_road_ids,
     fetch_asset_zone_distances_from_exasol,
@@ -574,10 +574,11 @@ def main():
     road_options = {r["road_id"]: r["name"] for r in roads}
 
     # Session state defaults
-    st.session_state.setdefault("fleet_pct",     0.6)
-    st.session_state.setdefault("prioritize",    False)
-    st.session_state.setdefault("manual_blocks", [])
-    st.session_state.setdefault("_first_run",    True)
+    st.session_state.setdefault("fleet_pct",        0.6)
+    st.session_state.setdefault("prioritize",        False)
+    st.session_state.setdefault("manual_blocks",     [])
+    st.session_state.setdefault("_first_run",        True)
+    st.session_state.setdefault("exasight_detection", None)  # last vision result
 
     # ── Sidebar ──────────────────────────────────────────────────────────────
     sb = st.sidebar
@@ -597,6 +598,41 @@ def main():
     )
     if sb.button("⚡ Parse Scenario", use_container_width=True):
         apply_parsed_scenario(scenario_text)
+        st.rerun()
+
+    sb.markdown('<p class="sidebar-header">ExaSight — Visual Intel</p>', unsafe_allow_html=True)
+    uploaded = sb.file_uploader(
+        "Upload drone footage / SOS image",
+        type=["jpg", "jpeg", "png", "webp", "gif"],
+        help="Vision AI will identify flooded roads and auto-block them.",
+        label_visibility="collapsed",
+    )
+    use_mock_vision = sb.checkbox(
+        "Mock vision (no API credits)",
+        value=True,
+        help="Uses a deterministic mock result — safe for rehearsal. Uncheck on demo day with a real API key.",
+    )
+    vision_api_key = None
+    if not use_mock_vision:
+        vision_api_key = sb.text_input(
+            "Anthropic API key", type="password",
+            help="Leave blank to use ANTHROPIC_API_KEY env var.",
+        ) or None
+
+    if uploaded is not None:
+        img_bytes = uploaded.read()
+        with sb.spinner("ExaSight analysing image..."):
+            detection = analyze_flood_image(
+                img_bytes,
+                road_ids=list(road_options.keys()),
+                api_key=vision_api_key,
+                use_mock=use_mock_vision,
+            )
+        st.session_state.exasight_detection = detection
+        detected_rid = detection["road_id"]
+        # Auto-add to manual_blocks if not already there
+        if detected_rid not in st.session_state.manual_blocks:
+            st.session_state.manual_blocks = list(st.session_state.manual_blocks) + [detected_rid]
         st.rerun()
 
     sb.markdown('<p class="sidebar-header">Parameters</p>', unsafe_allow_html=True)
@@ -668,10 +704,46 @@ def main():
 
     # ── Page header ──────────────────────────────────────────────────────────
     st.markdown(
-        f"<h1>🚨 EXACOMMAND — LIVE DEPLOYMENT PLAN</h1>",
+        "<h1>🚨 EXACOMMAND — LIVE DEPLOYMENT PLAN</h1>",
         unsafe_allow_html=True,
     )
     st.caption(f"data source: {live_status}")
+
+    # ── ExaSight alert banner (shown whenever a detection is active) ──────────
+    det = st.session_state.exasight_detection
+    if det is not None:
+        rid   = det["road_id"]
+        conf  = det["confidence"]
+        reason = det["reason"]
+        label = road_options.get(rid, rid)
+        st.markdown(
+            f"""
+<div style="background:#1a0000;border:1.5px solid #ef4444;border-radius:6px;
+            padding:0.65rem 1rem;margin-bottom:0.5rem;
+            font-family:'JetBrains Mono',monospace;">
+  <span style="color:#ef4444;font-weight:700;font-size:0.9rem;">🚨 EXASIGHT ALERT</span>
+  &nbsp;&nbsp;
+  <span style="color:#f0f6fc;font-size:0.82rem;">
+    Vision AI detected flooding on
+    <b style="color:#ef4444;">{rid} — {label}</b>.
+    Re-routing fleet…
+  </span>
+  <br/>
+  <span style="color:#6e7681;font-size:0.72rem;">
+    Confidence: {conf:.0%} &nbsp;|&nbsp; {reason}
+    &nbsp;|&nbsp;
+    <span style="cursor:pointer;color:#8b949e;">clear</span>
+  </span>
+</div>""",
+            unsafe_allow_html=True,
+        )
+        if st.button("✕ Clear ExaSight detection", key="clear_exasight"):
+            st.session_state.exasight_detection = None
+            if rid in st.session_state.manual_blocks:
+                st.session_state.manual_blocks = [
+                    r for r in st.session_state.manual_blocks if r != rid
+                ]
+            st.rerun()
 
     # ── HUD strip ────────────────────────────────────────────────────────────
     render_hud(result, fleet_pct, exasol_flooded_road_ids)

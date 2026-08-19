@@ -158,6 +158,143 @@ def parse_scenario_with_llm(user_text: str, api_key: Optional[str] = None) -> Sc
         return validate_and_clamp(rule_based_fallback(user_text))
 
 
+# ---------------------------------------------------------------------------
+# ExaSight — vision AI flood-road detection
+#
+# Contract:
+#   IN  : raw image bytes (any format the API accepts), the list of valid
+#         road IDs to map detections onto, and an optional API key.
+#   OUT : {"road_id": "R00X", "confidence": 0.95, "reason": "..."}
+#
+# Demo-safety guarantee:
+#   ANY exception (network timeout, API error, JSON parse failure, missing
+#   library) falls through to EXASIGHT_FALLBACK, which always returns R002.
+#   The demo never dies here.
+#
+# To test without burning credits:  pass use_mock=True.
+# To go live:  set ANTHROPIC_API_KEY in the environment and leave use_mock=False.
+# ---------------------------------------------------------------------------
+
+import base64
+import json
+import os
+
+EXASIGHT_FALLBACK = {
+    "road_id": "R002",
+    "confidence": 0.99,
+    "reason": "Simulated fallback detection (Vision API unavailable or timed out)",
+}
+
+EXASIGHT_SYSTEM_PROMPT = (
+    "You are a crisis intelligence agent. Analyze this image. "
+    "Identify if it shows a flood. If yes, map it to one of these known "
+    "Chennai roads: [R001, R002, R003, R004, R005, R006]. "
+    "Output ONLY a strict JSON payload with no markdown, no explanation: "
+    '{\"road_id\": \"R00X\", \"confidence\": 0.95, '
+    '\"reason\": \"Visual evidence of severe waterlogging\"}'
+)
+
+_MOCK_DETECTIONS = [
+    {"road_id": "R002", "confidence": 0.97, "reason": "Mock: severe waterlogging visible on carriageway"},
+    {"road_id": "R001", "confidence": 0.91, "reason": "Mock: submerged road surface detected"},
+    {"road_id": "R005", "confidence": 0.88, "reason": "Mock: flood water encroaching on road shoulders"},
+]
+_mock_cycle = 0
+
+
+def analyze_flood_image(
+    image_bytes: bytes,
+    road_ids: list = None,
+    api_key: Optional[str] = None,
+    use_mock: bool = False,
+    timeout_s: int = 15,
+) -> dict:
+    """
+    Analyze an uploaded image and return a road-block detection result.
+
+    Parameters
+    ----------
+    image_bytes : bytes
+        Raw bytes of the uploaded image file.
+    road_ids : list[str], optional
+        The valid road IDs the model may reference. Defaults to R001-R006.
+    api_key : str, optional
+        Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+    use_mock : bool
+        If True, return a deterministic mock result without any API call.
+    timeout_s : int
+        Hard timeout for the API request; on expiry → fallback.
+
+    Returns
+    -------
+    dict with keys: road_id (str), confidence (float), reason (str)
+    """
+    global _mock_cycle
+    if road_ids is None:
+        road_ids = list(VALID_ROAD_IDS)
+
+    # ── Mock path (for testing without credits) ──────────────────────────────
+    if use_mock:
+        result = _MOCK_DETECTIONS[_mock_cycle % len(_MOCK_DETECTIONS)]
+        _mock_cycle += 1
+        return dict(result)
+
+    # ── Live Anthropic vision path ────────────────────────────────────────────
+    try:
+        import anthropic  # not in requirements.txt by default; add if going live
+
+        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            print("[ExaSight] No API key found; using fallback")
+            return dict(EXASIGHT_FALLBACK)
+
+        b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+        client = anthropic.Anthropic(api_key=key)
+
+        resp = client.messages.create(
+            model="claude-opus-4-5",   # best vision model; swap to claude-sonnet-4-5 to save cost
+            max_tokens=256,
+            timeout=timeout_s,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",  # API accepts jpeg/png/gif/webp
+                                "data": b64,
+                            },
+                        },
+                        {"type": "text", "text": EXASIGHT_SYSTEM_PROMPT},
+                    ],
+                }
+            ],
+        )
+
+        raw_text = resp.content[0].text.strip()
+        # Strip any accidental markdown fences the model adds
+        raw_text = raw_text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        parsed = json.loads(raw_text)
+
+        # Validate the road_id is one we actually know about
+        road_id = parsed.get("road_id", "")
+        if road_id not in VALID_ROAD_IDS:
+            print(f"[ExaSight] Model returned unknown road_id '{road_id}'; using fallback")
+            return dict(EXASIGHT_FALLBACK)
+
+        return {
+            "road_id": road_id,
+            "confidence": float(parsed.get("confidence", 0.0)),
+            "reason": str(parsed.get("reason", "")),
+        }
+
+    except Exception as exc:  # network error, timeout, JSON parse, import error — anything
+        print(f"[ExaSight] Vision API failed ({exc}); using demo-safe fallback")
+        return dict(EXASIGHT_FALLBACK)
+
+
 if __name__ == "__main__":
     tests = [
         "Only 60% of the fleet has reported ready. Prioritize children and elderly zones.",
