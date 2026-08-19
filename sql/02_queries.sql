@@ -40,7 +40,7 @@ SELECT
 FROM ASSETS a
 CROSS JOIN ZONES z
 WHERE a.STATUS = 'available'
-ORDER BY a.ASSET_ID, DISTANCE_M;
+ORDER BY a.ASSET_ID, z.ZONE_ID;
 
 -- =============================================================================
 -- Q4. Zone -> nearest facility distance (for capacity-constrained routing).

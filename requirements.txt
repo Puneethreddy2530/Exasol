@@ -3,3 +3,5 @@ pandas>=2.0
 numpy>=1.26
 pyexasol>=0.27
 anthropic>=0.40
+streamlit>=1.61
+pydeck>=0.9

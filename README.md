@@ -9,25 +9,26 @@ the Real World).
 
 Submission deadline: **23 Aug 2026, 9:00 PM IST.**
 
-## Status as of this session (17 Aug 2026)
+## Status as of this session (19 Aug 2026)
 
 Everything below was actually run, not just written. Where something is unverified, it says so.
 
 | Piece | Status |
 |---|---|
 | Corridor data generator (`data/`) | ✅ Runs, produces 20 zones / 396,992 people, 6 roads, 10 facilities, 28 assets |
-| MCLP solver (`solver/mclp_solver.py`) | ✅ Runs, `OPTIMAL` status, and can now auto-block roads from Exasol Q1 |
+| MCLP solver (`solver/mclp_solver.py`) | ✅ Runs, `OPTIMAL` status, auto-blocks roads from Exasol Q1, and can consume Exasol Q3 asset-zone distances |
 | Road-network routing (ambulances only; boats bypass roads by design) | ✅ Wired to Exasol flood-road status plus manual/judge-clicked road blocks |
 | AI tool-calling contract + rule-based fallback (`agent/tools.py`) | ✅ Fallback parser tested against 3 phrasings |
 | Exasol schema (`sql/01_schema.sql`) | ✅ Live-tested against Exasol Personal Local on `127.0.0.1:8563` |
-| Exasol spatial queries (`sql/02_queries.sql`) | ✅ Q1 live-tested through `pyexasol` and independently through `exapump`; Q2-Q5 are written but still need live query-specific checks |
+| Exasol spatial queries (`sql/02_queries.sql`) | ✅ Q1 and Q3 live-tested through `pyexasol`; Q1 and Q3 independently checked through `exapump`; Q2, Q4, Q5 are written but still need live query-specific checks |
 | pyexasol loader (`scripts/load_data.py`) | ✅ Live-run against Exasol Personal Local; loads 20 zones, 3 flood zones, 6 roads, 10 facilities, 28 assets |
 | Frontend (map, sliders, road-click) | ❌ Not started this session |
 | Real OSM road network / real flood-hazard data (opencity.in) | ❌ Not started — current data is synthetic, anchored on real coordinates (see `data/generate_corridor_data.py` docstring) |
 
 ## The verified killer metric
 
-Running `solver/mclp_solver.py --use-exasol-road-status` with 60% fleet availability
+Running `solver/mclp_solver.py --use-exasol-road-status --use-exasol-distance-matrix`
+with 60% fleet availability
 (a credible early-crisis assumption, not everything-is-fine):
 
 ```
@@ -37,6 +38,9 @@ BEFORE (uncoordinated — each unit independently drives to its own nearest zone
 
 EXASOL ROAD STATUS:
   ST_INTERSECTS auto-closes roads R001, R003, R004, R005, R006
+
+EXASOL DISTANCE MATRIX:
+  Q3 ST_DISTANCE/ST_TRANSFORM returns 560 available asset-zone pairs
 
 AFTER (ExaCommand — CP-SAT solves the coverage-maximization problem centrally,
        using Exasol's flooded-road list, OPTIMAL status):
@@ -48,6 +52,12 @@ JUDGE ROAD-CLICK MOMENT:
   Blocking the one remaining passable connector (`R002`) on top of Exasol's
   flood closures drops optimized coverage from 69.5% to 56.2%.
 ```
+
+**Framing choice:** this is a deliberately severe starting scenario: five of six
+arterial roads are already impassable before the judge clicks anything. Say that
+plainly in the pitch. The drama of `R002` is honest precisely because it is the
+last passable connector, not because the demo is pretending this is a neutral
+or everyday flood baseline.
 
 **Why this baseline, not a "smart" greedy algorithm:** an earlier version of this compared
 against a population-sorted greedy assignment and found the gap was often close to zero —
@@ -76,6 +86,18 @@ passes those IDs into `blocked_road_ids` automatically, so ambulances route only
 over the remaining passable road graph. With those flood closures active, a
 manual/judge-click block of `R002` changes optimized coverage from 69.5% to
 56.2%. That is the demo road-click to rehearse.
+
+## Q3 distance matrix — what's proven
+
+The solver can now fetch the asset-to-zone matrix from Exasol using
+`ST_DISTANCE(ST_TRANSFORM(..., 3857), ST_TRANSFORM(..., 3857))`, while keeping
+the local haversine path as the fast offline fallback. The live query returned
+all `28 assets x 20 zones = 560` rows through `pyexasol`, and the independent
+`exapump` check reported `560` pairs with distances from `103.9m` to `11098.9m`.
+
+Road closures still affect ambulance reachability through the deterministic
+locality graph; the Exasol Q3 matrix supplies point-to-point spatial distances,
+and Q1 supplies flooded-road status.
 
 ## Setup
 
@@ -107,8 +129,8 @@ exakit info      # note host/port/user/password
 # Apply schema + load data
 .\.venv\Scripts\python.exe scripts\load_data.py --password <from exakit info>
 
-# Run solver with Exasol's ST_INTERSECTS road closures wired in
-.\.venv\Scripts\python.exe solver\mclp_solver.py --use-exasol-road-status --password-file "$env:USERPROFILE\.exasol-starter-kit\credentials\nano_sys_password"
+# Run solver with Exasol's ST_INTERSECTS road closures and Q3 distance matrix wired in
+.\.venv\Scripts\python.exe solver\mclp_solver.py --use-exasol-road-status --use-exasol-distance-matrix --password-file "$env:USERPROFILE\.exasol-starter-kit\credentials\nano_sys_password"
 
 # Connect an AI client (Claude Code, Cursor, etc.) with governed read-only access
 exakit mcp-setup
@@ -128,8 +150,8 @@ python3 -m venv .venv
 python -m pip install -r requirements.txt
 python scripts/load_data.py --password <from exakit info>
 
-# Run solver with Exasol's ST_INTERSECTS road closures wired in
-python solver/mclp_solver.py --use-exasol-road-status --password-file ~/.exasol-starter-kit/credentials/nano_sys_password
+# Run solver with Exasol's ST_INTERSECTS road closures and Q3 distance matrix wired in
+python solver/mclp_solver.py --use-exasol-road-status --use-exasol-distance-matrix --password-file ~/.exasol-starter-kit/credentials/nano_sys_password
 
 # Connect an AI client (Claude Code, Cursor, etc.) with governed read-only access
 exakit mcp-setup
@@ -160,9 +182,9 @@ Judge types a scenario, OR drags a slider / clicks a road on the map
      directly.
                     |
                     v
-     Exasol (GEOMETRY tables, ST_INTERSECTS, read-only MCP access)
-     detects flooded roads; the solver currently keeps distance/routing
-     local until Q3's distance matrix is wired in
+     Exasol (GEOMETRY tables, ST_INTERSECTS, ST_DISTANCE/
+     ST_TRANSFORM, read-only MCP access) detects flooded roads and
+     supplies the asset-zone distance matrix
                     |
                     v
      MCLP solver (OR-Tools CP-SAT) — maximizes weighted population

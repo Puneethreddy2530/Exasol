@@ -12,11 +12,11 @@ mobile assets being assigned/routed rather than sited from scratch):
               only) and within MAX_REACH_M of it
              covered(z) = 1 only if at least one eligible asset is assigned
 
-This module can now ask Exasol for Q1 road status: roads whose geometry
-intersects active flood zones are auto-fed into blocked_road_ids before the
-solver builds the ambulance road graph. Distances/routing are still computed
-locally as a stand-in for Exasol's ST_DISTANCE/ST_TRANSFORM Q3 matrix; wire
-that next without changing the CP-SAT formulation.
+This module can now ask Exasol for Q1 road status and the Q3 asset-to-zone
+distance matrix. Roads whose geometry intersects active flood zones are
+auto-fed into blocked_road_ids before the solver builds the ambulance road
+graph; direct point-to-point distances can come from Exasol's
+ST_DISTANCE/ST_TRANSFORM query instead of the local haversine fallback.
 """
 
 import argparse
@@ -114,6 +114,22 @@ def flooded_roads_sql(schema):
     """
 
 
+def asset_zone_distance_sql(schema):
+    schema = checked_identifier(schema)
+    return f"""
+        SELECT
+            a.ASSET_ID,
+            a.TYPE AS ASSET_TYPE,
+            z.ZONE_ID,
+            z.POPULATION,
+            ST_DISTANCE(ST_TRANSFORM(a.GEO, 3857), ST_TRANSFORM(z.GEO, 3857)) AS DISTANCE_M
+        FROM {schema}.ASSETS a
+        CROSS JOIN {schema}.ZONES z
+        WHERE a.STATUS = 'available'
+        ORDER BY a.ASSET_ID, z.ZONE_ID
+    """
+
+
 def fetch_flooded_road_ids_from_exasol(
     dsn="127.0.0.1:8563",
     user="sys",
@@ -145,6 +161,36 @@ def fetch_flooded_road_ids_from_exasol(
         conn.close()
 
 
+def fetch_asset_zone_distances_from_exasol(
+    dsn="127.0.0.1:8563",
+    user="sys",
+    password=None,
+    schema="EXACOMMAND",
+    validate_cert=False,
+):
+    """Return dict[(asset_id, zone_id)] = distance_m from Exasol Q3."""
+    if not password:
+        raise ValueError("Exasol password is required when --use-exasol-distance-matrix is set")
+
+    import pyexasol
+
+    websocket_sslopt = None if validate_cert else {"cert_reqs": ssl.CERT_NONE}
+    conn = pyexasol.connect(
+        dsn=dsn,
+        user=user,
+        password=password,
+        websocket_sslopt=websocket_sslopt,
+    )
+    try:
+        distances = {}
+        for row in conn.execute(asset_zone_distance_sql(schema)):
+            asset_id, _, zone_id, _, distance_m = row
+            distances[(asset_id, zone_id)] = float(distance_m)
+        return distances
+    finally:
+        conn.close()
+
+
 def combine_blocked_road_ids(*sources):
     combined, seen = [], set()
     for source in sources:
@@ -159,8 +205,32 @@ def read_text_secret(path):
     return Path(path).read_text().strip()
 
 
+def resolve_exasol_password(args, parser):
+    password = args.password
+    if not password and args.password_file:
+        password = read_text_secret(args.password_file)
+    if not password:
+        parser.error(
+            "--use-exasol-road-status and --use-exasol-distance-matrix require "
+            "--password or --password-file"
+        )
+    return password
+
+
 def zone_is_flooded(zone, flood_zones):
     return any(point_in_polygon(zone["lat"], zone["lon"], fz["poly"]) for fz in flood_zones)
+
+
+def direct_asset_zone_distance_m(asset, zone, distance_lookup=None):
+    if distance_lookup is None:
+        return haversine_m(asset["lat"], asset["lon"], zone["lat"], zone["lon"])
+
+    key = (asset["asset_id"], zone["zone_id"])
+    if key not in distance_lookup:
+        raise KeyError(
+            f"Exasol distance matrix did not include available asset-zone pair {key[0]} -> {key[1]}"
+        )
+    return distance_lookup[key]
 
 
 def build_locality_graph(roads, locality_coords, blocked_road_ids):
@@ -203,7 +273,7 @@ def shortest_path_m(graph, start, end):
     return None  # unreachable
 
 
-def build_eligibility(zones, flood_zones, assets, roads=None, blocked_road_ids=None):
+def build_eligibility(zones, flood_zones, assets, roads=None, blocked_road_ids=None, distance_lookup=None):
     """Returns dict[(asset_id, zone_id)] = distance_m, only for eligible,
     in-reach pairs. Mirrors what Q1/Q2 (flood/road status) + Q3 (distance)
     would return from Exasol.
@@ -233,13 +303,13 @@ def build_eligibility(zones, flood_zones, assets, roads=None, blocked_road_ids=N
                 continue
 
             if a["type"] == "boat":
-                d = haversine_m(a["lat"], a["lon"], z["lat"], z["lon"])
+                d = direct_asset_zone_distance_m(a, z, distance_lookup)
             else:
                 # last-mile hops (asset -> its locality centroid, locality
                 # centroid -> zone) plus the shortest road-network path
                 # between localities.
                 if not roads or a.get("base_locality") == z.get("locality"):
-                    d = haversine_m(a["lat"], a["lon"], z["lat"], z["lon"])
+                    d = direct_asset_zone_distance_m(a, z, distance_lookup)
                 else:
                     path_d = shortest_path_m(graph, a["base_locality"], z["locality"])
                     if path_d is None:
@@ -257,8 +327,23 @@ def zone_weight(zone, prioritize_children_elderly=False):
     return w
 
 
-def solve_mclp(zones, flood_zones, assets, roads=None, blocked_road_ids=None, prioritize_children_elderly=False):
-    pairs, flooded = build_eligibility(zones, flood_zones, assets, roads=roads, blocked_road_ids=blocked_road_ids)
+def solve_mclp(
+    zones,
+    flood_zones,
+    assets,
+    roads=None,
+    blocked_road_ids=None,
+    prioritize_children_elderly=False,
+    distance_lookup=None,
+):
+    pairs, flooded = build_eligibility(
+        zones,
+        flood_zones,
+        assets,
+        roads=roads,
+        blocked_road_ids=blocked_road_ids,
+        distance_lookup=distance_lookup,
+    )
     zone_by_id = {z["zone_id"]: z for z in zones}
 
     model = cp_model.CpModel()
@@ -324,7 +409,7 @@ def solve_mclp(zones, flood_zones, assets, roads=None, blocked_road_ids=None, pr
     }
 
 
-def solve_uncoordinated_baseline(zones, flood_zones, assets, roads=None, blocked_road_ids=None):
+def solve_uncoordinated_baseline(zones, flood_zones, assets, roads=None, blocked_road_ids=None, distance_lookup=None):
     """THE baseline for the demo: each asset independently drives to its own
     nearest eligible zone, with no visibility into what any other asset is
     doing. This is the honest 'before ExaCommand' state — not a strawman
@@ -334,7 +419,14 @@ def solve_uncoordinated_baseline(zones, flood_zones, assets, roads=None, blocked
     solve_greedy_baseline) — greedy already assumes central coordination
     exists, which is the thing ExaCommand actually provides, so it understates
     the real gap. Report this one as the headline number."""
-    pairs, flooded = build_eligibility(zones, flood_zones, assets, roads=roads, blocked_road_ids=blocked_road_ids)
+    pairs, flooded = build_eligibility(
+        zones,
+        flood_zones,
+        assets,
+        roads=roads,
+        blocked_road_ids=blocked_road_ids,
+        distance_lookup=distance_lookup,
+    )
     covered_zone_ids = set()
     assignments = []
     for a in assets:
@@ -358,10 +450,17 @@ def solve_uncoordinated_baseline(zones, flood_zones, assets, roads=None, blocked
     }
 
 
-def solve_greedy_baseline(zones, flood_zones, assets, roads=None, blocked_road_ids=None):
+def solve_greedy_baseline(zones, flood_zones, assets, roads=None, blocked_road_ids=None, distance_lookup=None):
     """Naive baseline: sort zones by population descending, assign nearest
     still-available eligible asset. This is the 'before AI' number."""
-    pairs, flooded = build_eligibility(zones, flood_zones, assets, roads=roads, blocked_road_ids=blocked_road_ids)
+    pairs, flooded = build_eligibility(
+        zones,
+        flood_zones,
+        assets,
+        roads=roads,
+        blocked_road_ids=blocked_road_ids,
+        distance_lookup=distance_lookup,
+    )
     zones_sorted = sorted(zones, key=lambda z: -z["population"])
     used_assets = set()
     covered_population = 0
@@ -400,6 +499,11 @@ def main():
         action="store_true",
         help="Ask Exasol which roads intersect flood zones and auto-block those roads.",
     )
+    ap.add_argument(
+        "--use-exasol-distance-matrix",
+        action="store_true",
+        help="Ask Exasol for the Q3 asset-to-zone ST_DISTANCE/ST_TRANSFORM matrix.",
+    )
     ap.add_argument("--dsn", default="127.0.0.1:8563")
     ap.add_argument("--user", default="sys")
     ap.add_argument("--password")
@@ -424,23 +528,34 @@ def main():
                        boats[: max(1, int(len(boats) * keep))]
 
     exasol_flooded_road_ids = []
-    if args.use_exasol_road_status:
-        password = args.password
-        if not password and args.password_file:
-            password = read_text_secret(args.password_file)
-        if not password:
-            ap.error("--use-exasol-road-status requires --password or --password-file")
+    exasol_distance_lookup = None
+    exasol_password = None
+    if args.use_exasol_road_status or args.use_exasol_distance_matrix:
+        exasol_password = resolve_exasol_password(args, ap)
 
+    if args.use_exasol_road_status:
         print("Exasol road-status SQL (read-only):")
         print(flooded_roads_sql(args.schema).strip())
         exasol_flooded_road_ids = fetch_flooded_road_ids_from_exasol(
             dsn=args.dsn,
             user=args.user,
-            password=password,
+            password=exasol_password,
             schema=args.schema,
             validate_cert=args.validate_cert,
         )
         print()
+
+    if args.use_exasol_distance_matrix:
+        print("Exasol asset-zone distance SQL (read-only):")
+        print(asset_zone_distance_sql(args.schema).strip())
+        exasol_distance_lookup = fetch_asset_zone_distances_from_exasol(
+            dsn=args.dsn,
+            user=args.user,
+            password=exasol_password,
+            schema=args.schema,
+            validate_cert=args.validate_cert,
+        )
+        print(f"\nFetched {len(exasol_distance_lookup)} asset-zone distances from Exasol Q3.\n")
 
     blocked_road_ids = combine_blocked_road_ids(
         exasol_flooded_road_ids,
@@ -451,6 +566,10 @@ def main():
           f"{len(flood_zones)} flood zones, {len(roads)} roads, {len(assets)} assets in fleet\n")
     print(f"DEMO SCENARIO: {len(scenario_assets)} of {len(assets)} assets have reported ready "
           f"({int(keep*100)}% fleet availability)")
+    if args.use_exasol_distance_matrix:
+        print("Asset-zone distance source: Exasol Q3 ST_DISTANCE/ST_TRANSFORM matrix")
+    else:
+        print("Asset-zone distance source: local haversine fallback")
     if args.use_exasol_road_status:
         print("Roads auto-closed by Exasol flood analysis: "
               f"{', '.join(exasol_flooded_road_ids) or '(none)'}")
@@ -465,6 +584,7 @@ def main():
         scenario_assets,
         roads=roads,
         blocked_road_ids=blocked_road_ids,
+        distance_lookup=exasol_distance_lookup,
     )
     print("=== BEFORE: uncoordinated response (each unit picks its own nearest zone) ===")
     print(f"Coverage: {uncoordinated['coverage_pct']}%  "
@@ -479,6 +599,7 @@ def main():
         roads=roads,
         blocked_road_ids=blocked_road_ids,
         prioritize_children_elderly=False,
+        distance_lookup=exasol_distance_lookup,
     )
     print("=== AFTER: ExaCommand (CP-SAT, globally optimal) ===")
     print(f"Status: {optimal['status']}   Solve time: {optimal['solve_time_s']}s")
@@ -499,6 +620,7 @@ def main():
         roads=roads,
         blocked_road_ids=blocked_road_ids,
         prioritize_children_elderly=True,
+        distance_lookup=exasol_distance_lookup,
     )
     print(f"Coverage: {prioritized['coverage_pct']}%  "
           f"(assignment set changed: {optimal['assignments'] != prioritized['assignments']})\n")
@@ -507,8 +629,15 @@ def main():
     click_road_id = remaining_road_ids[0] if args.use_exasol_road_status and remaining_road_ids else "R001"
     print(f"=== Re-solve with {click_road_id} manually blocked - the 'judge clicks a road' moment ===")
     clicked_blocked_road_ids = combine_blocked_road_ids(blocked_road_ids, [click_road_id])
-    blocked = solve_mclp(zones, flood_zones, scenario_assets, roads=roads,
-                          blocked_road_ids=clicked_blocked_road_ids, prioritize_children_elderly=False)
+    blocked = solve_mclp(
+        zones,
+        flood_zones,
+        scenario_assets,
+        roads=roads,
+        blocked_road_ids=clicked_blocked_road_ids,
+        prioritize_children_elderly=False,
+        distance_lookup=exasol_distance_lookup,
+    )
     print(f"Coverage: {optimal['coverage_pct']}% -> {blocked['coverage_pct']}%  "
           f"(assignment set changed: {optimal['assignments'] != blocked['assignments']})")
 

@@ -4,3 +4,4 @@ __pycache__/
 .exasol-starter-kit/
 files*/
 files*.zip
+streamlit.*.log
