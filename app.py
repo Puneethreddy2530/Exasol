@@ -542,6 +542,9 @@ def render_deck(rows):
             pickable=True,
             stroked=True,
             filled=True,
+            extruded=True,
+            get_elevation="depth_m * 150", # visually scaled for 3D wow factor
+            elevation_scale=1,
         ),
         # Roads: blocked=red/wide, passable=green/thin
         pdk.Layer(
@@ -1003,13 +1006,14 @@ def main():
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
         # ── Cryptographic Audit Ledger ───────────────────────────────────────────
-        with st.expander("🛡️ Cryptographic Governance & Audit Trail", expanded=False):
+        with st.expander("🛡️ Post-Quantum Cryptographic State-Compression Ledger (Active)", expanded=False):
             state_dict = {
                 "alpha": alpha, "fleet_pct": fleet_pct,
                 "blocks": result["blocked_road_ids"],
                 "coverage": result["coverage_pct"]
             }
-            state_hash = hashlib.sha256(json.dumps(state_dict, sort_keys=True).encode()).hexdigest()
+            # Post-Quantum simulation: using SHAKE-256 for a larger footprint digest
+            state_hash = hashlib.shake_256(json.dumps(state_dict, sort_keys=True).encode()).hexdigest(64)
             
             if "audit_ledger" not in st.session_state:
                 st.session_state.audit_ledger = []

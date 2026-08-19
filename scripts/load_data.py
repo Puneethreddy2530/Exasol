@@ -32,6 +32,7 @@ SCHEMA_SQL = (ROOT / "sql" / "01_schema.sql").read_text()
 UDF_SQL = (ROOT / "sql" / "03_udf.sql").read_text()
 ROUTE_SQL = (ROOT / "sql" / "04_graph_routing.sql").read_text()
 AUDIT_SQL = (ROOT / "sql" / "05_audit_ledger.sql").read_text()
+ANOMALY_SQL = (ROOT / "sql" / "06_anomaly_ml.sql").read_text()
 
 
 def load_csv(conn, table, csv_path, columns):
@@ -94,6 +95,13 @@ def main():
     conn.execute(UDF_SQL)
     conn.execute(ROUTE_SQL)
     conn.execute(AUDIT_SQL)
+    
+    print("Deploying ML Anomaly UDF (sql/06_anomaly_ml.sql)...")
+    try:
+        conn.execute(ANOMALY_SQL)
+        print("Anomaly ML UDF deployed successfully.")
+    except Exception as e:
+        print(f"Skipping ML Anomaly UDF due to missing Python3 SLC (Expected in Sandbox): {e}")
 
     load_csv(conn, "ZONES", str(ROOT / "data" / "zones.csv"), [
         ("zone_id", "ZONE_ID", "str"), ("locality", "LOCALITY", "str"),
