@@ -371,6 +371,7 @@ def solve_mclp(
     prioritize_children_elderly=False,
     distance_lookup=None,
     db_weights=None,
+    alpha=0.85,
 ):
     pairs, flooded = build_eligibility(
         zones,
@@ -405,13 +406,27 @@ def solve_mclp(
             for var in eligible_x:
                 model.Add(covered[z_id] >= var)
 
-    objective_terms = []
+    # Pareto Optimization Objective
+    # Maximize (alpha * Weighted_Pop) - ((1 - alpha) * Routing_Risk)
+    pop_terms = []
+    risk_terms = []
+    
     for z in zones:
         z_id = z["zone_id"]
         w = zone_weight(z, prioritize_children_elderly, db_weights)
         pop_scaled = int(z["population"] * w)
-        objective_terms.append(pop_scaled * covered[z_id])
-    model.Maximize(sum(objective_terms))
+        pop_terms.append(pop_scaled * covered[z_id])
+        
+    for (a_id, z_id), var in x.items():
+        # Distance acts as our proxy for fleet deployment risk
+        risk = int(pairs[(a_id, z_id)]) 
+        risk_terms.append(risk * var)
+
+    # Note: CP-SAT requires integer coefficients, so we scale alpha by 100
+    alpha_int = int(alpha * 100)
+    beta_int = 100 - alpha_int
+    
+    model.Maximize( (alpha_int * sum(pop_terms)) - (beta_int * sum(risk_terms)) )
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 5.0
@@ -442,6 +457,7 @@ def solve_mclp(
         "total_population": total_population,
         "coverage_pct": round(100 * covered_population / total_population, 1),
         "num_flooded_zones": sum(flooded.values()),
+        "alpha": alpha,
     }
 
 
