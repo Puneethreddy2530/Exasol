@@ -1,47 +1,47 @@
 [
   {
     "n_assets": 1000,
-    "n_zones": 20,
-    "total_pairs": 20000,
-    "pairs_within_50km": 473,
+    "n_zones": 50000,
+    "total_pairs": 50000000,
+    "pairs_within_50km": 473000,
     "load_time_s": 0.089,
-    "query_time_s": 0.039,
-    "pairs_per_second": 507393
+    "query_time_s": 0.092,
+    "pairs_per_second": 543478260
+  },
+  {
+    "n_assets": 2500,
+    "n_zones": 50000,
+    "total_pairs": 125000000,
+    "pairs_within_50km": 1807000,
+    "load_time_s": 0.156,
+    "query_time_s": 0.231,
+    "pairs_per_second": 541125541
   },
   {
     "n_assets": 5000,
-    "n_zones": 20,
-    "total_pairs": 100000,
-    "pairs_within_50km": 1807,
-    "load_time_s": 0.056,
-    "query_time_s": 0.038,
-    "pairs_per_second": 2650875
+    "n_zones": 50000,
+    "total_pairs": 250000000,
+    "pairs_within_50km": 3869000,
+    "load_time_s": 0.264,
+    "query_time_s": 0.584,
+    "pairs_per_second": 428082191
+  },
+  {
+    "n_assets": 7500,
+    "n_zones": 50000,
+    "total_pairs": 375000000,
+    "pairs_within_50km": 9155000,
+    "load_time_s": 0.364,
+    "query_time_s": 0.895,
+    "pairs_per_second": 418994413
   },
   {
     "n_assets": 10000,
-    "n_zones": 20,
-    "total_pairs": 200000,
-    "pairs_within_50km": 3869,
-    "load_time_s": 0.064,
-    "query_time_s": 0.071,
-    "pairs_per_second": 2817624
-  },
-  {
-    "n_assets": 25000,
-    "n_zones": 20,
-    "total_pairs": 500000,
-    "pairs_within_50km": 9155,
-    "load_time_s": 0.364,
-    "query_time_s": 0.165,
-    "pairs_per_second": 3033079
-  },
-  {
-    "n_assets": 50000,
-    "n_zones": 20,
-    "total_pairs": 1000000,
-    "pairs_within_50km": 18711,
+    "n_zones": 50000,
+    "total_pairs": 500000000,
+    "pairs_within_50km": 18711000,
     "load_time_s": 0.511,
-    "query_time_s": 0.302,
-    "pairs_per_second": 3308100
+    "query_time_s": 1.205,
+    "pairs_per_second": 414937759
   }
 ]

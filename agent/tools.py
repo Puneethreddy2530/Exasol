@@ -296,63 +296,43 @@ def analyze_flood_image(
 
 
 
-import os
-from io import BytesIO
 
-try:
-    from openai import AzureOpenAI
-    HAS_OPENAI = True
-except ImportError:
-    HAS_OPENAI = False
+import requests
+import json
 
-def transcribe_audio(audio_bytes):
-    if not HAS_OPENAI:
+def extract_parameters_via_ollama(transcript):
+    if not transcript:
         return None
     try:
-        client = AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
-        )
-        audio_file = BytesIO(audio_bytes)
-        audio_file.name = "audio.wav"
-        result = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file
-        )
-        return result.text
-    except Exception as e:
-        print(f"[Voice] Transcription failed: {e}")
-        return None
-
-def parse_voice_command(transcript):
-    if not HAS_OPENAI or not transcript:
-        return None
-    try:
-        client = AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
-        )
         system_prompt = (
-            "You are a crisis AI. Extract disaster parameters from this transcript. "
-            "Output ONLY valid JSON: {'fleet_availability': float (0.0 to 1.0), "
-            "'prioritize_vulnerable': bool, 'blocked_roads': list of road IDs like ['R001', 'R002']}."
+            "You are an offline crisis AI. Extract disaster parameters from the user's transcript. "
+            "Output strictly valid JSON with these keys: 'fleet_availability' (float 0.0-1.0), "
+            "'prioritize_vulnerable' (boolean), and 'blocked_roads' (list of IDs like ['R001']). "
+            "Do not include any other text."
         )
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": transcript}
-            ],
-            temperature=0.0
-        )
-        raw = response.choices[0].message.content.strip()
-        raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        
+        payload = {
+            "model": "llama3",
+            "prompt": f"System: {system_prompt}\\n\\nUser: {transcript}\\n\\nAssistant:",
+            "format": "json",
+            "stream": False,
+            "options": {
+                "temperature": 0.0
+            }
+        }
+        
+        response = requests.post("http://localhost:11434/api/generate", json=payload, timeout=5)
+        response.raise_for_status()
+        
+        raw = response.json().get("response", "").strip()
         return json.loads(raw)
-    except Exception as e:
-        print(f"[Voice] Parse failed: {e}")
+    except requests.exceptions.ConnectionError:
+        print("[Voice] Ollama is not running on localhost:11434. Falling back to manual sliders.")
         return None
+    except Exception as e:
+        print(f"[Voice] Ollama Parse failed: {e}")
+        return None
+
 
 if __name__ == "__main__":
     tests = [

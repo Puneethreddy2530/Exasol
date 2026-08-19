@@ -24,8 +24,7 @@ import json
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from agent.tools import rule_based_fallback, validate_and_clamp, analyze_flood_image, transcribe_audio, parse_voice_command
-from streamlit_mic_recorder import mic_recorder
+from agent.tools import rule_based_fallback, validate_and_clamp, analyze_flood_image, extract_parameters_via_ollama
 import time
 from solver.mclp_solver import (
     combine_blocked_road_ids,
@@ -683,24 +682,21 @@ def main():
     sb.caption("South Chennai Flood Corridor · Crisis Resource Allocation")
 
 
-    sb.markdown('<p class="sidebar-header">🎤 Live Field Comm-Link</p>', unsafe_allow_html=True)
-    audio = mic_recorder(
-        start_prompt="Start recording",
-        stop_prompt="Stop recording",
-        key='recorder'
-    )
-    if audio:
-        with sb.spinner("Transcribing via Whisper..."):
-            transcript = transcribe_audio(audio['bytes'])
-        if transcript:
-            st.toast(f'🎙️ Heard: "{transcript}"')
-            with sb.spinner("Extracting parameters via GPT-4..."):
-                parsed = parse_voice_command(transcript)
-            if parsed:
-                st.session_state.fleet_pct = parsed.get("fleet_availability", 0.6)
-                st.session_state.prioritize = parsed.get("prioritize_vulnerable", False)
-                st.session_state.manual_blocks = parsed.get("blocked_roads", [])
-                st.rerun()
+    sb.markdown('<p class="sidebar-header">🎙️ Simulated Comm-Link (Ollama)</p>', unsafe_allow_html=True)
+    
+    # Form keeps it from triggering on every single keystroke
+    with sb.form("comm_link_form", border=False):
+        transcript = st.text_input("Report Field Intel:", placeholder="e.g. We lost R002. Drop fleet to 40%.", label_visibility="collapsed")
+        submitted = st.form_submit_button("Transmit")
+        
+    if submitted and transcript:
+        with sb.spinner("Extracting parameters via Llama3 (Offline)..."):
+            parsed = extract_parameters_via_ollama(transcript)
+        if parsed:
+            st.session_state.fleet_pct = parsed.get("fleet_availability", 0.6)
+            st.session_state.prioritize = parsed.get("prioritize_vulnerable", False)
+            st.session_state.manual_blocks = parsed.get("blocked_roads", [])
+            st.rerun()
 
     sb.markdown('<p class="sidebar-header">Scenario</p>', unsafe_allow_html=True)
     scenario_text = sb.text_area(
@@ -844,7 +840,7 @@ def main():
                 auto_highlight=True,
             )
             globe_view = pdk.View(type="GlobeView", controller=True)
-            view_state = pdk.ViewState(latitude=0, longitude=0, zoom=0)
+            view_state = pdk.ViewState(latitude=20.5937, longitude=78.9629, zoom=3.5)
             
             st.pydeck_chart(
                 pdk.Deck(
@@ -859,8 +855,8 @@ def main():
             st.warning("Failed to fetch live GDACS feed or no active crises.")
 
     with tab3:
-        st.markdown("<h1>⚡ EXASOL ARCHITECTURE BENCHMARK</h1>", unsafe_allow_html=True)
-        st.caption("Scaling spatial distance joins (ST_DISTANCE) on Exasol Personal Local")
+        st.markdown("<h1>⚡ PAN-INDIA SPATIAL MATRIX (SCALE TEST)</h1>", unsafe_allow_html=True)
+        st.caption("Simulating National Disaster Response Force (NDRF) deployment across the Indian Subcontinent.")
         
         bench_path = ROOT / "data" / "benchmark_results.json"
         
