@@ -12,6 +12,9 @@ import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
+import requests
+import json
+
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
@@ -364,6 +367,27 @@ def cached_live_exasol_inputs(dsn, user, password, schema, validate_cert):
     return fetch_live_exasol_inputs(dsn, user, password, schema, validate_cert)
 
 
+
+@st.cache_data(ttl=300)
+def fetch_global_disasters():
+    url = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=FL,EQ,TC,VO,DR,WF&alertlevel=Red,Orange&limit=20"
+    try:
+        data = requests.get(url, timeout=10).json()
+        crises = []
+        for feature in data.get('features', []):
+            coords = feature.get('geometry', {}).get('coordinates', [0, 0])
+            crises.append({
+                "name": feature['properties'].get('name', 'Unknown'),
+                "type": feature['properties'].get('eventtype', '?'),
+                "severity": feature['properties'].get('alertscore', 0),
+                "lon": coords[0],
+                "lat": coords[1]
+            })
+        return pd.DataFrame(crises)
+    except Exception as e:
+        print("GDACS fetch failed:", e)
+        return pd.DataFrame()
+
 # ---------------------------------------------------------------------------
 # HUD strip
 # ---------------------------------------------------------------------------
@@ -702,81 +726,144 @@ def main():
         result["blocked_road_ids"],
     )
 
-    # ── Page header ──────────────────────────────────────────────────────────
-    st.markdown(
-        "<h1>🚨 EXACOMMAND — LIVE DEPLOYMENT PLAN</h1>",
-        unsafe_allow_html=True,
-    )
-    st.caption(f"data source: {live_status}")
+    # ── Tabs ─────────────────────────────────────────────────────────────────
+    tab1, tab2, tab3 = st.tabs(["🌍 Global Threat Matrix", "🚨 Tactical Command", "⚡ Architecture Benchmark"])
 
-    # ── ExaSight alert banner (shown whenever a detection is active) ──────────
-    det = st.session_state.exasight_detection
-    if det is not None:
-        rid   = det["road_id"]
-        conf  = det["confidence"]
-        reason = det["reason"]
-        label = road_options.get(rid, rid)
+    with tab1:
+        st.markdown("<h1>🌍 GLOBAL THREAT MATRIX</h1>", unsafe_allow_html=True)
+        st.caption("Live GDACS disaster feed (Earthquakes, Floods, Cyclones)")
+        
+        crises_df = fetch_global_disasters()
+        if not crises_df.empty:
+            globe_layer = pdk.Layer(
+                "ColumnLayer",
+                data=crises_df,
+                get_position=["lon", "lat"],
+                get_elevation="severity",
+                elevation_scale=50000,
+                radius=20000,
+                get_fill_color=[239, 68, 68, 200],
+                pickable=True,
+                auto_highlight=True,
+            )
+            globe_view = pdk.View(type="GlobeView", controller=True)
+            view_state = pdk.ViewState(latitude=0, longitude=0, zoom=0)
+            
+            st.pydeck_chart(
+                pdk.Deck(
+                    layers=[globe_layer],
+                    views=[globe_view],
+                    initial_view_state=view_state,
+                    map_style=MAP_STYLE,
+                    tooltip={"html": "<b>{name}</b><br/>Type: {type}<br/>Severity: {severity}"}
+                )
+            )
+        else:
+            st.warning("Failed to fetch live GDACS feed or no active crises.")
+
+    with tab3:
+        st.markdown("<h1>⚡ EXASOL ARCHITECTURE BENCHMARK</h1>", unsafe_allow_html=True)
+        st.caption("Scaling spatial distance joins (ST_DISTANCE) on Exasol Personal Local")
+        
+        bench_path = ROOT / "data" / "benchmark_results.json"
+        
+        if bench_path.exists():
+            with open(bench_path) as f:
+                b_res = json.load(f)
+            
+            st.markdown(
+                "**The Math:** Exasol executes:<br/>"
+                r"$$\text{Pairs Within Range} = \sum_{i=1}^{n\_assets} \sum_{j=1}^{n\_zones} \mathbb{1}_{\text{ST\_DISTANCE}(\text{Asset}_i, \text{Zone}_j) < 50km}$$",
+                unsafe_allow_html=True
+            )
+            
+            b_df = pd.DataFrame(b_res)
+            st.dataframe(
+                b_df[["n_assets", "n_zones", "total_pairs", "query_time_s", "pairs_per_second"]].style.format(
+                    {"total_pairs": "{:,}", "query_time_s": "{:.3f}s", "pairs_per_second": "{:,}"}
+                ),
+                hide_index=True,
+                use_container_width=True
+            )
+            st.line_chart(b_df.set_index("total_pairs")["pairs_per_second"])
+        else:
+            st.info("Run `scratch/run_benchmark.py` to generate real benchmark numbers.")
+
+    with tab2:
         st.markdown(
-            f"""
-<div style="background:#1a0000;border:1.5px solid #ef4444;border-radius:6px;
-            padding:0.65rem 1rem;margin-bottom:0.5rem;
-            font-family:'JetBrains Mono',monospace;">
-  <span style="color:#ef4444;font-weight:700;font-size:0.9rem;">🚨 EXASIGHT ALERT</span>
-  &nbsp;&nbsp;
-  <span style="color:#f0f6fc;font-size:0.82rem;">
-    Vision AI detected flooding on
-    <b style="color:#ef4444;">{rid} — {label}</b>.
-    Re-routing fleet…
-  </span>
-  <br/>
-  <span style="color:#6e7681;font-size:0.72rem;">
-    Confidence: {conf:.0%} &nbsp;|&nbsp; {reason}
-    &nbsp;|&nbsp;
-    <span style="cursor:pointer;color:#8b949e;">clear</span>
-  </span>
-</div>""",
+            "<h1>🚨 EXACOMMAND — LIVE DEPLOYMENT PLAN</h1>",
             unsafe_allow_html=True,
         )
-        if st.button("✕ Clear ExaSight detection", key="clear_exasight"):
-            st.session_state.exasight_detection = None
-            if rid in st.session_state.manual_blocks:
-                st.session_state.manual_blocks = [
-                    r for r in st.session_state.manual_blocks if r != rid
-                ]
-            st.rerun()
+        st.caption(f"data source: {live_status}")
 
-    # ── HUD strip ────────────────────────────────────────────────────────────
-    render_hud(result, fleet_pct, exasol_flooded_road_ids)
-
-    # First-run toast
-    if st.session_state._first_run:
-        if exasol_flooded_road_ids:
-            st.toast(
-                f"⚠ Exasol Q1: {len(exasol_flooded_road_ids)} roads auto-closed "
-                f"({', '.join(exasol_flooded_road_ids)})",
-                icon="🔴",
+        # ── ExaSight alert banner (shown whenever a detection is active) ──────────
+        det = st.session_state.exasight_detection
+        if det is not None:
+            rid   = det["road_id"]
+            conf  = det["confidence"]
+            reason = det["reason"]
+            label = road_options.get(rid, rid)
+            st.markdown(
+                f"""
+    <div style="background:#1a0000;border:1.5px solid #ef4444;border-radius:6px;
+                padding:0.65rem 1rem;margin-bottom:0.5rem;
+                font-family:'JetBrains Mono',monospace;">
+      <span style="color:#ef4444;font-weight:700;font-size:0.9rem;">🚨 EXASIGHT ALERT</span>
+      &nbsp;&nbsp;
+      <span style="color:#f0f6fc;font-size:0.82rem;">
+        Vision AI detected flooding on
+        <b style="color:#ef4444;">{rid} — {label}</b>.
+        Re-routing fleet…
+      </span>
+      <br/>
+      <span style="color:#6e7681;font-size:0.72rem;">
+        Confidence: {conf:.0%} &nbsp;|&nbsp; {reason}
+        &nbsp;|&nbsp;
+        <span style="cursor:pointer;color:#8b949e;">clear</span>
+      </span>
+    </div>""",
+                unsafe_allow_html=True,
             )
-        else:
-            st.toast("Running in offline mode — using local haversine distances", icon="💾")
-        st.session_state._first_run = False
+            if st.button("✕ Clear ExaSight detection", key="clear_exasight"):
+                st.session_state.exasight_detection = None
+                if rid in st.session_state.manual_blocks:
+                    st.session_state.manual_blocks = [
+                        r for r in st.session_state.manual_blocks if r != rid
+                    ]
+                st.rerun()
 
-    # ── Map ──────────────────────────────────────────────────────────────────
-    render_deck(rows)
-    render_legend(exasol_flooded_road_ids, result["blocked_road_ids"])
+        # ── HUD strip ────────────────────────────────────────────────────────────
+        render_hud(result, fleet_pct, exasol_flooded_road_ids)
 
-    # ── Assignments table ────────────────────────────────────────────────────
-    with st.expander("ASSIGNMENT MANIFEST", expanded=False):
-        all_assignments = (
-            rows["ambulance_assignments"] + rows["boat_assignments"]
-        )
-        if all_assignments:
-            df = pd.DataFrame(
-                [{"assignment": r["label"], "distance_m": r["detail"]}
-                 for r in all_assignments]
+        # First-run toast
+        if st.session_state._first_run:
+            if exasol_flooded_road_ids:
+                st.toast(
+                    f"⚠ Exasol Q1: {len(exasol_flooded_road_ids)} roads auto-closed "
+                    f"({', '.join(exasol_flooded_road_ids)})",
+                    icon="🔴",
+                )
+            else:
+                st.toast("Running in offline mode — using local haversine distances", icon="💾")
+            st.session_state._first_run = False
+
+        # ── Map ──────────────────────────────────────────────────────────────────
+        render_deck(rows)
+        render_legend(exasol_flooded_road_ids, result["blocked_road_ids"])
+
+        # ── Assignments table ────────────────────────────────────────────────────
+        with st.expander("ASSIGNMENT MANIFEST", expanded=False):
+            all_assignments = (
+                rows["ambulance_assignments"] + rows["boat_assignments"]
             )
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
-            st.write("No assignments in current scenario.")
+            if all_assignments:
+                df = pd.DataFrame(
+                    [{"assignment": r["label"], "distance_m": r["detail"]}
+                     for r in all_assignments]
+                )
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            else:
+                st.write("No assignments in current scenario.")
 
 
 if __name__ == "__main__":

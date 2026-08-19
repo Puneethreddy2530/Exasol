@@ -1,0 +1,47 @@
+[
+  {
+    "n_assets": 1000,
+    "n_zones": 20,
+    "total_pairs": 20000,
+    "pairs_within_50km": 473,
+    "load_time_s": 0.089,
+    "query_time_s": 0.039,
+    "pairs_per_second": 507393
+  },
+  {
+    "n_assets": 5000,
+    "n_zones": 20,
+    "total_pairs": 100000,
+    "pairs_within_50km": 1807,
+    "load_time_s": 0.056,
+    "query_time_s": 0.038,
+    "pairs_per_second": 2650875
+  },
+  {
+    "n_assets": 10000,
+    "n_zones": 20,
+    "total_pairs": 200000,
+    "pairs_within_50km": 3869,
+    "load_time_s": 0.064,
+    "query_time_s": 0.071,
+    "pairs_per_second": 2817624
+  },
+  {
+    "n_assets": 25000,
+    "n_zones": 20,
+    "total_pairs": 500000,
+    "pairs_within_50km": 9155,
+    "load_time_s": 0.364,
+    "query_time_s": 0.165,
+    "pairs_per_second": 3033079
+  },
+  {
+    "n_assets": 50000,
+    "n_zones": 20,
+    "total_pairs": 1000000,
+    "pairs_within_50km": 18711,
+    "load_time_s": 0.511,
+    "query_time_s": 0.302,
+    "pairs_per_second": 3308100
+  }
+]
