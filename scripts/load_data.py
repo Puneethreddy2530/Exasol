@@ -29,6 +29,7 @@ import pyexasol
 
 ROOT = Path(__file__).resolve().parent.parent  # works regardless of cwd
 SCHEMA_SQL = (ROOT / "sql" / "01_schema.sql").read_text()
+UDF_SQL = (ROOT / "sql" / "03_udf.sql").read_text()
 
 
 def load_csv(conn, table, csv_path, columns):
@@ -86,6 +87,9 @@ def main():
             conn.execute(stmt)
 
     conn.execute(f"OPEN SCHEMA {args.schema}")
+
+    print("Deploying Python UDF (sql/03_udf.sql)...")
+    conn.execute(UDF_SQL)
 
     load_csv(conn, "ZONES", str(ROOT / "data" / "zones.csv"), [
         ("zone_id", "ZONE_ID", "str"), ("locality", "LOCALITY", "str"),

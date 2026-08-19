@@ -320,7 +320,42 @@ def build_eligibility(zones, flood_zones, assets, roads=None, blocked_road_ids=N
     return pairs, flooded
 
 
-def zone_weight(zone, prioritize_children_elderly=False):
+
+def fetch_db_weights_from_exasol(dsn, user, password, schema, prioritize_children_elderly=False, validate_cert=False):
+    if not password:
+        return None
+    import pyexasol
+    websocket_sslopt = None if validate_cert else {"cert_reqs": ssl.CERT_NONE}
+    conn = pyexasol.connect(
+        dsn=dsn, user=user, password=password, websocket_sslopt=websocket_sslopt,
+    )
+    try:
+        # Mocking elderly_pct, children_pct, and elevation_m since the schema doesn't have them
+        query = f"""
+        SELECT ZONE_ID, 
+               {schema}.CALCULATE_VULNERABILITY_SCORE(
+                   POPULATION, 
+                   PRIORITY_CHILDREN_ELDERLY_PCT * 50, -- Mock elderly pct
+                   PRIORITY_CHILDREN_ELDERLY_PCT * 50, -- Mock children pct
+                   10.0 -- Mock elevation
+               ) as SCORE
+        FROM {schema}.ZONES
+        """
+        weights = {}
+        for row in conn.execute(query):
+            weights[row[0]] = float(row[1])
+        return weights
+    except Exception as e:
+        print(f"Failed to fetch DB weights: {e}")
+        return None
+    finally:
+        conn.close()
+
+def zone_weight(zone, prioritize_children_elderly=False, db_weights=None):
+    if db_weights and zone["zone_id"] in db_weights:
+        # DB Weights already handled the multiplier logic inside the UDF!
+        return db_weights[zone["zone_id"]]
+        
     w = 1.0
     if prioritize_children_elderly:
         w += zone["priority_children_elderly_pct"] * 2.0  # up-weight priority zones
@@ -335,6 +370,7 @@ def solve_mclp(
     blocked_road_ids=None,
     prioritize_children_elderly=False,
     distance_lookup=None,
+    db_weights=None,
 ):
     pairs, flooded = build_eligibility(
         zones,
@@ -372,7 +408,7 @@ def solve_mclp(
     objective_terms = []
     for z in zones:
         z_id = z["zone_id"]
-        w = zone_weight(z, prioritize_children_elderly)
+        w = zone_weight(z, prioritize_children_elderly, db_weights)
         pop_scaled = int(z["population"] * w)
         objective_terms.append(pop_scaled * covered[z_id])
     model.Maximize(sum(objective_terms))

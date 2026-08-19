@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 from agent.tools import rule_based_fallback, validate_and_clamp, analyze_flood_image, extract_parameters_via_ollama
 import time
 from solver.mclp_solver import (
+    fetch_db_weights_from_exasol,
     combine_blocked_road_ids,
     fetch_asset_zone_distances_from_exasol,
     fetch_flooded_road_ids_from_exasol,
@@ -296,7 +297,7 @@ def fetch_live_exasol_inputs(dsn, user, password, schema, validate_cert=False):
 
 def solve_scenario(zones, flood_zones, assets, roads, fleet_pct, prioritize,
                    manual_blocked_road_ids, exasol_flooded_road_ids=None,
-                   distance_lookup=None, weather_penalty=1.0):
+                   distance_lookup=None, weather_penalty=1.0, db_weights=None):
     scenario_assets = select_scenario_assets(assets, fleet_pct)
     blocked_road_ids = combine_blocked_road_ids(exasol_flooded_road_ids, manual_blocked_road_ids)
     
@@ -811,6 +812,7 @@ def main():
         exasol_flooded_road_ids=exasol_flooded_road_ids,
         distance_lookup=distance_lookup,
         weather_penalty=weather_penalty,
+        db_weights=db_weights,
     )
     rows = build_map_rows(
         zones, flood_zones, assets, roads,

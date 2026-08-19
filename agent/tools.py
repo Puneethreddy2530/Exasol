@@ -312,7 +312,7 @@ def extract_parameters_via_ollama(transcript):
         )
         
         payload = {
-            "model": "llama3",
+            "model": "exacommand-c4isr",
             "prompt": f"System: {system_prompt}\\n\\nUser: {transcript}\\n\\nAssistant:",
             "format": "json",
             "stream": False,
