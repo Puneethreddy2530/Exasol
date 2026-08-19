@@ -5,3 +5,4 @@ __pycache__/
 files*/
 files*.zip
 streamlit.*.log
+.env
