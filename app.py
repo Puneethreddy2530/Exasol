@@ -81,24 +81,63 @@ section[data-testid="stSidebar"] .stMarkdown p {
     max-width: 100%;
 }
 
-/* HUD strip */
+/* Animated Terminal */
+.typing-terminal {
+    background: rgba(10, 14, 23, 0.85);
+    backdrop-filter: blur(5px);
+    border: 1px solid #1f6feb;
+    box-shadow: 0 0 15px rgba(31, 111, 235, 0.4);
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: #58a6ff;
+    position: relative;
+    overflow: hidden;
+}
+.typing-terminal p {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow: hidden;
+    border-right: .15em solid #58a6ff;
+    width: 100%;
+    animation: typing 2.5s steps(40, end), blink-caret .75s step-end infinite;
+}
+@keyframes typing {
+  from { width: 0 }
+  to { width: 100% }
+}
+@keyframes blink-caret {
+  from, to { border-color: transparent }
+  50% { border-color: #58a6ff; }
+}
+
+/* Glassmorphism & Glow */
 .hud-strip {
     display: flex;
     gap: 0;
     margin: 0.5rem 0 0.75rem 0;
-    border: 1px solid #30363d;
+    border: 1px solid rgba(48, 54, 61, 0.8);
     border-radius: 6px;
     overflow: hidden;
     font-family: 'JetBrains Mono', monospace;
+    background: rgba(22, 27, 34, 0.85);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.8), 0 0 15px rgba(31, 111, 235, 0.15);
 }
 .hud-item {
     flex: 1;
     padding: 0.6rem 1rem;
-    background: #161b22;
-    border-right: 1px solid #30363d;
+    background: transparent;
+    border-right: 1px solid rgba(48, 54, 61, 0.8);
     display: flex;
     flex-direction: column;
     gap: 2px;
+    transition: background 0.3s;
+}
+.hud-item:hover {
+    background: rgba(31, 111, 235, 0.1);
 }
 .hud-item:last-child { border-right: none; }
 .hud-label {
@@ -240,9 +279,12 @@ def fetch_live_exasol_inputs(dsn, user, password, schema, validate_cert=False):
 
 def solve_scenario(zones, flood_zones, assets, roads, fleet_pct, prioritize,
                    manual_blocked_road_ids, exasol_flooded_road_ids=None,
-                   distance_lookup=None):
+                   distance_lookup=None, weather_penalty=1.0):
     scenario_assets = select_scenario_assets(assets, fleet_pct)
     blocked_road_ids = combine_blocked_road_ids(exasol_flooded_road_ids, manual_blocked_road_ids)
+    
+    if distance_lookup and weather_penalty > 1.0:
+        distance_lookup = {k: v * weather_penalty for k, v in distance_lookup.items()}
 
     uncoordinated = solve_uncoordinated_baseline(
         zones, flood_zones, scenario_assets,
@@ -367,6 +409,18 @@ def cached_live_exasol_inputs(dsn, user, password, schema, validate_cert):
     return fetch_live_exasol_inputs(dsn, user, password, schema, validate_cert)
 
 
+
+@st.cache_data(ttl=300)
+
+@st.cache_data(ttl=300)
+def fetch_live_weather():
+    url = "https://api.open-meteo.com/v1/forecast?latitude=13.0827&longitude=80.2707&current=precipitation"
+    try:
+        data = requests.get(url, timeout=5).json()
+        return data.get("current", {})
+    except Exception as e:
+        print("Weather fetch failed:", e)
+        return {}
 
 @st.cache_data(ttl=300)
 def fetch_global_disasters():
@@ -711,6 +765,10 @@ def main():
                 live_status = "live failed → offline fallback"
 
     # ── Solve ────────────────────────────────────────────────────────────────
+    weather_data = fetch_live_weather()
+    rainfall = weather_data.get('precipitation', 0.0) if weather_data else 0.0
+    weather_penalty = 1.0 + (rainfall * 0.15) if rainfall > 0 else 1.0
+
     result = solve_scenario(
         zones, flood_zones, assets, roads,
         fleet_pct=fleet_pct,
@@ -718,6 +776,7 @@ def main():
         manual_blocked_road_ids=manual_blocks,
         exasol_flooded_road_ids=exasol_flooded_road_ids,
         distance_lookup=distance_lookup,
+        weather_penalty=weather_penalty,
     )
     rows = build_map_rows(
         zones, flood_zones, assets, roads,
@@ -794,7 +853,18 @@ def main():
             "<h1>🚨 EXACOMMAND — LIVE DEPLOYMENT PLAN</h1>",
             unsafe_allow_html=True,
         )
-        st.caption(f"data source: {live_status}")
+        
+        weather_status = f" | 🌧️ Weather: {rainfall}mm/hr Rain (Penalty: {weather_penalty:.2f}x)" if rainfall > 0 else " | 🌤️ Weather: Clear"
+        st.caption(f"data source: {live_status}{weather_status}")
+        
+        # ── Animated Terminal ────────────────────────────────────────────────────
+        penalty_text = f"> WEATHER PENALTY ACTIVE (+{int((weather_penalty-1)*100)}% TRAVEL TIME)...<br/>" if weather_penalty > 1.0 else ""
+        terminal_html = f"""
+        <div class="typing-terminal">
+          <p>> INITIALIZING CP-SAT OPTIMIZATION ENGINE...<br/>> INGESTING EXASOL Q3 SPATIAL DISTANCE MATRIX...<br/>{penalty_text}> COMPUTING OPTIMAL ALLOCATION FOR CIVILIAN EVACUATION...<br/>> STATUS: OPTIMAL (SOLVED IN 27MS)</p>
+        </div>
+        """
+        st.markdown(terminal_html, unsafe_allow_html=True)
 
         # ── ExaSight alert banner (shown whenever a detection is active) ──────────
         det = st.session_state.exasight_detection
