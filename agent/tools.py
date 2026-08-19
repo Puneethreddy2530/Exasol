@@ -209,96 +209,53 @@ def analyze_flood_image(
     use_mock: bool = False,
     timeout_s: int = 15,
 ) -> dict:
-    """
-    Analyze an uploaded image and return a road-block detection result.
-
-    Parameters
-    ----------
-    image_bytes : bytes
-        Raw bytes of the uploaded image file.
-    road_ids : list[str], optional
-        The valid road IDs the model may reference. Defaults to R001-R006.
-    api_key : str, optional
-        Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
-    use_mock : bool
-        If True, return a deterministic mock result without any API call.
-    timeout_s : int
-        Hard timeout for the API request; on expiry → fallback.
-
-    Returns
-    -------
-    dict with keys: road_id (str), confidence (float), reason (str)
-    """
-    global _mock_cycle
     if road_ids is None:
         road_ids = list(VALID_ROAD_IDS)
 
-    # ── Mock path (for testing without credits) ──────────────────────────────
-    if use_mock:
-        result = _MOCK_DETECTIONS[_mock_cycle % len(_MOCK_DETECTIONS)]
-        _mock_cycle += 1
-        return dict(result)
-
-    # ── Live Anthropic vision path ────────────────────────────────────────────
+    # ── Sovereign Local Vision (Ollama LLAVA) ─────────────────────────────
+    import requests
+    import base64
+    import json
+    
+    b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+    
+    payload = {
+        "model": "llava",
+        "prompt": (
+            "You are an autonomous edge-vision node. Analyze this drone imagery. "
+            "Output strictly JSON: {'road_id': 'R002', 'confidence': 0.95, 'reason': 'Deep water detected'}. "
+            "If no flood is detected, return confidence 0.0."
+        ),
+        "images": [b64],
+        "format": "json",
+        "stream": False,
+        "options": {
+            "temperature": 0.0
+        }
+    }
+    
     try:
-        import anthropic  # not in requirements.txt by default; add if going live
-
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            print("[ExaSight] No API key found; using fallback")
-            return dict(EXASIGHT_FALLBACK)
-
-        b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-        client = anthropic.Anthropic(api_key=key)
-
-        resp = client.messages.create(
-            model="claude-opus-4-5",   # best vision model; swap to claude-sonnet-4-5 to save cost
-            max_tokens=256,
-            timeout=timeout_s,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",  # API accepts jpeg/png/gif/webp
-                                "data": b64,
-                            },
-                        },
-                        {"type": "text", "text": EXASIGHT_SYSTEM_PROMPT},
-                    ],
-                }
-            ],
-        )
-
-        raw_text = resp.content[0].text.strip()
-        # Strip any accidental markdown fences the model adds
-        raw_text = raw_text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        parsed = json.loads(raw_text)
-
-        # Validate the road_id is one we actually know about
+        response = requests.post("http://localhost:11434/api/generate", json=payload, timeout=timeout_s)
+        response.raise_for_status()
+        raw = response.json().get("response", "").strip()
+        parsed = json.loads(raw)
+        
         road_id = parsed.get("road_id", "")
-        if road_id not in VALID_ROAD_IDS:
-            print(f"[ExaSight] Model returned unknown road_id '{road_id}'; using fallback")
+        if road_id not in road_ids:
             return dict(EXASIGHT_FALLBACK)
-
+            
         return {
             "road_id": road_id,
             "confidence": float(parsed.get("confidence", 0.0)),
             "reason": str(parsed.get("reason", "")),
         }
-
-    except Exception as exc:  # network error, timeout, JSON parse, import error — anything
-        print(f"[ExaSight] Vision API failed ({exc}); using demo-safe fallback")
+    except requests.exceptions.ConnectionError:
+        print("[ExaSight] Ollama llava model offline. Using graceful demo fallback.")
+        return dict(EXASIGHT_FALLBACK)
+    except Exception as exc:
+        print(f"[ExaSight] Local Vision failed ({exc}); using graceful fallback")
         return dict(EXASIGHT_FALLBACK)
 
-
-
-
-import requests
-import json
 
 def extract_parameters_via_ollama(transcript):
     if not transcript:

@@ -17,6 +17,7 @@ load_dotenv()  # Load .env file automatically
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+import random
 import hashlib
 import json
 import plotly.graph_objects as go
@@ -532,6 +533,23 @@ def render_deck(rows):
     # Boat assignments: thinner, slightly more transparent
     # Both encoded by width AND color — projector and color-blind safe
     layers = [
+        # GPU-Accelerated Drone Swarm (Cyan Hexagons)
+        pdk.Layer(
+            "HexagonLayer",
+            data=rows["drones"],
+            get_position="[lon, lat]",
+            radius=150,
+            elevation_scale=4,
+            elevation_range=[0, 1000],
+            extruded=True,
+            coverage=1,
+            color_range=[
+                [0, 255, 255, 120],
+                [0, 200, 255, 180],
+                [0, 150, 255, 255]
+            ],
+            pickable=True,
+        ),
         pdk.Layer(
             "PolygonLayer",
             data=rows["floods"],
