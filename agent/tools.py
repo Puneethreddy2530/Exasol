@@ -295,6 +295,65 @@ def analyze_flood_image(
         return dict(EXASIGHT_FALLBACK)
 
 
+
+import os
+from io import BytesIO
+
+try:
+    from openai import AzureOpenAI
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+
+def transcribe_audio(audio_bytes):
+    if not HAS_OPENAI:
+        return None
+    try:
+        client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+        )
+        audio_file = BytesIO(audio_bytes)
+        audio_file.name = "audio.wav"
+        result = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file
+        )
+        return result.text
+    except Exception as e:
+        print(f"[Voice] Transcription failed: {e}")
+        return None
+
+def parse_voice_command(transcript):
+    if not HAS_OPENAI or not transcript:
+        return None
+    try:
+        client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+        )
+        system_prompt = (
+            "You are a crisis AI. Extract disaster parameters from this transcript. "
+            "Output ONLY valid JSON: {'fleet_availability': float (0.0 to 1.0), "
+            "'prioritize_vulnerable': bool, 'blocked_roads': list of road IDs like ['R001', 'R002']}."
+        )
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": transcript}
+            ],
+            temperature=0.0
+        )
+        raw = response.choices[0].message.content.strip()
+        raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        return json.loads(raw)
+    except Exception as e:
+        print(f"[Voice] Parse failed: {e}")
+        return None
+
 if __name__ == "__main__":
     tests = [
         "Only 60% of the fleet has reported ready. Prioritize children and elderly zones.",

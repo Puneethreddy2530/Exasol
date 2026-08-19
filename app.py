@@ -18,7 +18,9 @@ import json
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from agent.tools import rule_based_fallback, validate_and_clamp, analyze_flood_image
+from agent.tools import rule_based_fallback, validate_and_clamp, analyze_flood_image, transcribe_audio, parse_voice_command
+from streamlit_mic_recorder import mic_recorder
+import time
 from solver.mclp_solver import (
     combine_blocked_road_ids,
     fetch_asset_zone_distances_from_exasol,
@@ -99,17 +101,11 @@ section[data-testid="stSidebar"] .stMarkdown p {
 .typing-terminal p {
     margin: 0;
     white-space: pre-wrap;
-    overflow: hidden;
-    border-right: .15em solid #58a6ff;
-    width: 100%;
-    animation: typing 2.5s steps(40, end), blink-caret .75s step-end infinite;
 }
-@keyframes typing {
-  from { width: 0 }
+
   to { width: 100% }
 }
-@keyframes blink-caret {
-  from, to { border-color: transparent }
+
   50% { border-color: #58a6ff; }
 }
 
@@ -227,6 +223,22 @@ h1 {
     background: #30363d !important;
     border-color: #58a6ff !important;
 }
+
+/* CRT Overlay */
+.main .block-container::after {
+    content: " ";
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    right: 0;
+    background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+    z-index: 999;
+    background-size: 100% 2px, 3px 100%;
+    pointer-events: none;
+}
+
 </style>
 """
 
@@ -664,6 +676,26 @@ def main():
     sb.markdown('<p class="sidebar-header">ExaCommand</p>', unsafe_allow_html=True)
     sb.caption("South Chennai Flood Corridor · Crisis Resource Allocation")
 
+
+    sb.markdown('<p class="sidebar-header">🎤 Live Field Comm-Link</p>', unsafe_allow_html=True)
+    audio = mic_recorder(
+        start_prompt="Start recording",
+        stop_prompt="Stop recording",
+        key='recorder'
+    )
+    if audio:
+        with sb.spinner("Transcribing via Whisper..."):
+            transcript = transcribe_audio(audio['bytes'])
+        if transcript:
+            st.toast(f'🎙️ Heard: "{transcript}"')
+            with sb.spinner("Extracting parameters via GPT-4..."):
+                parsed = parse_voice_command(transcript)
+            if parsed:
+                st.session_state.fleet_pct = parsed.get("fleet_availability", 0.6)
+                st.session_state.prioritize = parsed.get("prioritize_vulnerable", False)
+                st.session_state.manual_blocks = parsed.get("blocked_roads", [])
+                st.rerun()
+
     sb.markdown('<p class="sidebar-header">Scenario</p>', unsafe_allow_html=True)
     scenario_text = sb.text_area(
         "Natural-language description",
@@ -858,13 +890,33 @@ def main():
         st.caption(f"data source: {live_status}{weather_status}")
         
         # ── Animated Terminal ────────────────────────────────────────────────────
-        penalty_text = f"> WEATHER PENALTY ACTIVE (+{int((weather_penalty-1)*100)}% TRAVEL TIME)...<br/>" if weather_penalty > 1.0 else ""
-        terminal_html = f"""
-        <div class="typing-terminal">
-          <p>> INITIALIZING CP-SAT OPTIMIZATION ENGINE...<br/>> INGESTING EXASOL Q3 SPATIAL DISTANCE MATRIX...<br/>{penalty_text}> COMPUTING OPTIMAL ALLOCATION FOR CIVILIAN EVACUATION...<br/>> STATUS: OPTIMAL (SOLVED IN 27MS)</p>
-        </div>
-        """
-        st.markdown(terminal_html, unsafe_allow_html=True)
+        term_ph = st.empty()
+        penalty_text = f"\n> WEATHER PENALTY ACTIVE (+{int((weather_penalty-1)*100)}% TRAVEL TIME)..." if weather_penalty > 1.0 else ""
+        
+        # Determine if we should animate (e.g. if a setting changed or first run)
+        # To avoid animating on every single st.rerun (e.g. tab change), we can just animate it quickly.
+        # Streamlit doesn't track tab state easily, so we just run the animation fast.
+        
+        lines = [
+            "> INITIALIZING CP-SAT OPTIMIZATION ENGINE...",
+            "> INGESTING EXASOL Q3 SPATIAL DISTANCE MATRIX..."
+        ]
+        if penalty_text:
+            lines.append(penalty_text.strip())
+        lines.append("> COMPUTING OPTIMAL ALLOCATION FOR CIVILIAN EVACUATION...")
+        lines.append("> STATUS: OPTIMAL (SOLVED IN 27MS)")
+        
+        # Only animate if something triggered a solve (simplest proxy: first time rendering this result)
+        # For the hackathon demo, we will animate it every time this block runs to ensure the cinematic effect.
+        rendered = ""
+        for line in lines:
+            rendered += line + "\n"
+            term_ph.markdown(f'<div class="typing-terminal"><p>{rendered}<span style="border-right:.15em solid #58a6ff; animation: blink-caret .75s step-end infinite;">&nbsp;</span></p></div>', unsafe_allow_html=True)
+            time.sleep(0.15)  # Cinematic pause
+        
+        # Final render without caret
+        term_ph.markdown(f'<div class="typing-terminal"><p>{rendered.strip()}</p></div>', unsafe_allow_html=True)
+
 
         # ── ExaSight alert banner (shown whenever a detection is active) ──────────
         det = st.session_state.exasight_detection
